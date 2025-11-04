@@ -1,3 +1,5 @@
+# Create an agent with create_agent function from langchain.agents, the more flexible version of create_react_agent. 
+
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langchain.agents import create_agent
