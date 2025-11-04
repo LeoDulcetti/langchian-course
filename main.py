@@ -62,3 +62,20 @@ if __name__ == "__main__":
 
 # Tavily helps the agent to connect to the Web API. It has a Free plan. Tavily is gonna expose the services and APIs to the agents.
 # It is a langchain provider.
+
+
+
+# What is an AgentExecutor in LangChain?
+# An AgentExecutor is a class that is used to execute an agent. It is a Runnable object, it receives an LLM and a list of tool and a prompt and the prompt we will give it to it is a react prompt.
+# An AgentExecutor is responsible for managing the interaction between the LLM and the tools. It is a while loop.
+# The AgentExecutor is gonna make sure that the agent can use the tools effectively and that the LLM can generate the right prompts for the tools.
+# It is something like this: 
+
+class FakeAgentExecutor:
+    def invoke(self,input):
+        while True:
+            result= self.agent(input) # The agent is gonna plan the next action based on the input.
+            if result == 'RunTool':
+                tool_to_run(tool_input) 
+            else: 
+                return result # Final answer
