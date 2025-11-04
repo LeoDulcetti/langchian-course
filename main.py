@@ -79,3 +79,4 @@ class FakeAgentExecutor:
                 tool_to_run(tool_input) 
             else: 
                 return result # Final answer
+# We stop the loop when we reach the final answer. When the LLM decides that it has enough information to provide a final answer, the loop terminates, and the answer is returned.
