@@ -1,0 +1,116 @@
+🧠 Resumen del código – Agente ReAct completo (LangChain clásico)
+Este programa demuestra cómo construir un agente ReAct (Reason + Act) de forma manual, usando las librerías de LangChain Classic y OpenAI, ejecutando un ciclo completo de pensamiento → acción → observación → respuesta final.
+El objetivo es que el modelo razone, decida una acción, ejecute una herramienta real (a través de Python) y luego use el resultado para concluir su respuesta final.
+⚙️ 1) Concepto general
+En un agente ReAct, el LLM (modelo) no ejecuta herramientas por sí mismo:
+solo razona en lenguaje natural y decide qué acción tomar.
+El entorno (en este caso, tu código en Python) interpreta esas instrucciones, ejecuta la herramienta correspondiente y devuelve la observación al modelo.
+El flujo general del agente es:
+Question → Thought → Action → Action Input → Observation → Thought → Final Answer
+Cada paso posterior se construye sobre un “scratchpad”, un historial de pensamientos y observaciones que el modelo utiliza para razonar con memoria de contexto.
+🧩 2) Componentes principales
+✅ get_text_length (herramienta)
+Una función decorada con @tool que recibe un texto y devuelve su longitud en caracteres.
+Esta función es el “acto” que el modelo puede decidir ejecutar.
+@tool
+def get_text_length(text: str) -> int:
+    ...
+✅ find_tool_by_name
+Busca en la lista de herramientas (tools) la que coincida con el nombre que el modelo haya pedido usar.
+def find_tool_by_name(tools, tool_name: str):
+    ...
+✅ PromptTemplate
+Define el formato ReAct que el modelo debe seguir.
+Incluye los pasos de razonamiento (Thought), acción (Action / Action Input), observación (Observation) y respuesta final (Final Answer).
+template = """Answer the following questions ...
+Thought: {agent_scratchpad}
+"""
+La variable {agent_scratchpad} se usa para insertar el historial de pasos intermedios (razonamientos previos y observaciones).
+Esto le da al modelo “memoria” de lo que ya ha hecho.
+✅ ChatOpenAI
+Es el modelo LLM que genera texto.
+Se configura con un stop token para detener la generación justo antes de “Observation”, de modo que el modelo no invente resultados de herramientas.
+llm = ChatOpenAI(temperature=0, stop=["\nObservation:", "\n  Observation:", "Observation:"])
+✅ ReActSingleInputOutputParser
+Interpreta la salida cruda del LLM (texto) y la convierte en una estructura de datos:
+AgentAction si el modelo pide ejecutar una herramienta.
+AgentFinish si ya dio su respuesta final.
+🔄 3) Flujo completo del programa
+Configuración inicial
+Carga variables de entorno (load_dotenv()).
+Declara y registra la herramienta get_text_length.
+Crea la lista tools = [get_text_length].
+Define el PromptTemplate, el ChatOpenAI y el parser.
+Primera invocación del agente
+Se llama al agente con la pregunta:
+“What is the length of the text: 'Hello, Leo!'?”
+El modelo genera un texto como:
+Thought: I need to find the length of the text.
+Action: get_text_length
+Action Input: "Hello, Leo!"
+El parser convierte esa salida en un objeto AgentAction:
+AgentAction(tool='get_text_length', tool_input='"Hello, Leo!"')
+Ejecución de la herramienta
+Como el agente devuelve un AgentAction, el código:
+Busca la tool correspondiente (get_text_length).
+Ejecuta su función (tool_to_use.func(...)).
+Obtiene una observación real (por ejemplo, 12).
+Añade (acción, observación) a la lista intermediate_steps.
+Esta lista actúa como memoria del agente y será usada en la siguiente iteración.
+Segunda invocación del agente
+Se llama otra vez al agente, esta vez pasando intermediate_steps en el agent_scratchpad.
+El prompt ahora incluye todo el razonamiento previo y la observación real:
+Thought: I need to find the length of the text.
+Action: get_text_length
+Action Input: "Hello, Leo!"
+Observation: 12
+Thought: I now know the final answer
+Final Answer:
+El modelo procesa esa información y produce un AgentFinish:
+AgentFinish(return_values={"output": "12"})
+Mostrar resultado final
+Si el resultado es AgentFinish, el código imprime el valor final:
+Final Answer: {'output': '12'}
+🧱 4) Estructuras que devuelve el parser
+➤ AgentAction
+Usado cuando el modelo elige una acción:
+AgentAction(
+  tool="get_text_length",
+  tool_input='"Hello, Leo!"',
+  log="Thought: ...\nAction: get_text_length\nAction Input: ..."
+)
+➤ AgentFinish
+Usado cuando el modelo finaliza su respuesta:
+AgentFinish(
+  return_values={"output": "12"},
+  log="Thought: I now know the final answer\nFinal Answer: 12"
+)
+🔍 5) Por qué el modelo no ejecuta la tool directamente
+El modelo de lenguaje solo genera texto, no puede ejecutar código Python ni funciones reales.
+Por eso el flujo se divide así:
+El LLM decide qué hacer (razonamiento y elección de herramienta).
+El parser traduce su texto a una estructura comprensible para Python.
+Tu código ejecuta la herramienta real y devuelve la observación.
+El LLM usa esa observación para completar su razonamiento y dar la respuesta final.
+Esto mantiene seguridad y control, evitando que el modelo ejecute código libremente.
+🧠 6) En resumen
+Etapa	Actor	Descripción
+1. Razonamiento inicial	LLM	Decide qué herramienta usar
+2. Parsing	LangChain	Convierte el texto en AgentAction
+3. Ejecución	Python	Ejecuta la tool real y obtiene una observación
+4. Segunda llamada	LLM	Usa la observación para dar el Final Answer
+5. Resultado final	Parser	Devuelve AgentFinish con la respuesta
+🎯 7) Resultado esperado
+Al ejecutar el script, se verá algo como:
+get_text_length received text: Hello, Leo!
+Observation: 12
+Intermediate Steps: [(AgentAction(...), 12)]
+Second step: AgentFinish(return_values={'output': '12'})
+Final Answer: {'output': '12'}
+💡 8) Qué se aprende con este código
+Cómo un agente ReAct razona paso a paso.
+Qué hacen internamente AgentAction y AgentFinish.
+Cómo se usan agent_scratchpad e intermediate_steps como memoria.
+Por qué los LLM no ejecutan herramientas directamente.
+Cómo construir manualmente el ciclo completo de pensamiento → acción → observación → respuesta.
+👉 En resumen, este código enseña los fundamentos internos de los agentes LangChain, mostrando de manera práctica cómo un modelo de lenguaje puede razonar, planificar acciones, ejecutarlas a través de Python, y llegar a conclusiones reales usando el patrón ReAct.

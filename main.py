@@ -1,82 +1,117 @@
-
-# Create an Agent with AgentExecutor and ReAct prompt that can search the web using TavilySearch tool. 
-
-
 from dotenv import load_dotenv
 load_dotenv()
-import os 
-os.environ.pop("LANGSMITH_API_KEY", None)
-from langchain_classic.agents import AgentExecutor, create_react_agent# built-in langchain function that is gonna create the ReAct agent for us.
-from langchain_classic import hub # hub from langchain is used for sharing prompt and agents created by the community. We are going to use to download a prompt: ReAct Prompt.
-# Agent Executor is a Runnable object, it receives an LLM and a list of tool and a prompt and the prompt we will give it to it is a react prompt.
-# An AgentExecutor is a class that is used to execute an agent. It is a Runnable object, it receives an LLM and a list of tool and a prompt and the prompt we will give it to it is a react prompt.
-# AgentExecutor is gonna make the actual calls to the LLM and manage the interaction between the LLM and the tools. It is a for loop.
-from langchain_openai import ChatOpenAI
-from langchain_tavily import TavilySearch 
+from langchain.tools import tool
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers.pydantic import PydanticOutputParser
-from langchain_core.runnables import RunnableLambda
+from langchain_openai import ChatOpenAI
+from langchain_classic.agents.output_parsers.react_single_input import ReActSingleInputOutputParser
+from typing import Union
+from langchain_classic.agents.agent import AgentAction, AgentFinish
+from langchain_classic.agents.format_scratchpad import format_log_to_str
+
+from callbacks import AgentCallbackHandler
 
 
-from prompt import REACT_PROMPT_WITH_FORMAT_INSTRUCTIONS
-from schemas import AgentResponse
-tools = [TavilySearch()] #This TavilySearch tool is gonna allow the agent to search the web using Tavily API.
-# We need to give information to the LLM about how to use this tool. The tool has a name, a description and input.
-# There is a schema of the tool like this:
-# {
-#   "name": "TavilySearch",
-#   "description": "Useful for when you need to answer questions about current events or the world. Input should be a search query.",
-#   "args": Property that returns the JSON schema of the tool's arguments.
-# }
-
-# The model only produces the input for running the tool but it is the AgentExecutor that is gonna actually run the tool with that input and get the output and give it back to the model.
-
-# This TavilySearch has already its description, name and args so we don't need to create a custom tool. 
-
-llm=ChatOpenAI(temperature=0, model_name="gpt-4")
-react_prompt= hub.pull("hwchase17/react") # It is a prompt template that is specifically designed for ReAct agents. The template you can check it by debugging the code.
-# The ReAct prompt is designed to guide the LLM to reason and act in an interleaved manner. It provides instructions and examples to the model on how to approach tasks using reasoning steps followed by actions.
-# It is the basis for the ReAct agent's decision-making process. Check the paper for further information.
-output_parser= PydanticOutputParser(pydantic_object=AgentResponse) # This output parser is gonna parse the final answer of the agent into the AgentResponse schema.
-react_prompt_with_format_instructions=PromptTemplate(template=REACT_PROMPT_WITH_FORMAT_INSTRUCTIONS, input_variables=['input', 'agent_scratchpad', 'tool_names']).partial(format_instructions=output_parser.get_format_instructions())
+@tool # A decorator that turns a function into a LangChain tool
+def get_text_length(text: str) -> int:
+    """Returns the length of the given text by characters"""
+    print(f"get_text_length received text: {text}")
+    text= text.strip("'\n'").strip('"')  # Remove surrounding quotes if present and stripping non alphanumeric characters
+    return len(text)
 
 
-agent= create_react_agent(llm, tools, prompt=react_prompt_with_format_instructions) # It is gonna recive everything we need to create the agent. It is gonna plug all the variables together.
-# This is the reasoing engine and now we need the execution of the agent.
-# You can also use react_prompt instead of react_prompt_with_format_instructions but in that case you won't have the output parsing with pydantic.
 
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True) # This is gonna be the agent Runtime. It is gonna manage the interaction between the LLM and the tools.
-# It is gonna run a while loop until the agent reaches a final answer. 
-
-chain= agent_executor # The chain is the agent executor. It is a runnable object so we can call it like a function.
-
-
-def main():
-    result= chain.invoke(input={"input": "What is the latest news about LangSmith by LangChain?"}) # The input is the one that is gonna be populated in the prompt template.
-    print(result)
-
+def find_tool_by_name(tools, tool_name: str):
+    for tool in tools:
+        if tool.name == tool_name:
+            return tool
+    raise ValueError(f"Tool with name {tool_name} not found")
 
 if __name__ == "__main__":
-    main()
+    tools= [get_text_length]
+    
+
+    template= """ Answer the following questions as best as you can using the provided tools:
+    {tools}
+
+    Use the following format:
+    Question: the input question you must answer
+    Thought: you should always think about what to do
+    Action: the action to take, should be one of [{tool_names}]
+    Action Input: the input to the action
+    Observation: the result of the action
+    ... (this Thought/Action/Action Input/Observation can repeat N times)
+    Thought: I now know the final answer
+    Final Answer: the final answer to the original input question
 
 
-# Tavily helps the agent to connect to the Web API. It has a Free plan. Tavily is gonna expose the services and APIs to the agents.
-# It is a langchain provider.
+    Begin!
+    
+    Question: {input} 
+    Thought: {agent_scratchpad}
+
+    """
+    # agent_scratchpad is a special variable that the ReActSingleInputOutputParser will use to insert the previous thoughts, actions, observations, etc. into the prompt for the next step.
+    # It is like a memory of what has happened so far in the conversation.
+    prompt= PromptTemplate(template=template).partial(
+        tools=tools, tool_names=", ".join([t.name for t in tools])) # This "partial" prompt will be completed with input, tools, tool_names
+    
+    # render_text_description(tools) is a LangChain helper that turns a list of tool objects into a readable text block you can drop straight into a prompt. It enumerates each tool (by name) along with its description (and, in newer versions, a brief view of its args schema), so the model understands what tools exist and when to use them.
+
+    llm= ChatOpenAI(temperature=0, stop=["\nObservation:",  "\n  Observation:", "Observation:"], callbacks=[AgentCallbackHandler()]) # This will tell the LLM to stop generating words and to finish working once it's outputted the backslash observation token.
+    # Otherwise the LLM might keep generating text and it's going to guess what comes next, which we don't want.
+    # If it comes from an LLM it would be an allusion to an observation, which we don't want.
+
+    intermediate_steps = []
+
+    agent= {"input": lambda x:x['input'], "agent_scratchpad": lambda x: format_log_to_str(x['agent_scratchpad'])} | prompt | llm | ReActSingleInputOutputParser() # Create a simple agent by piping the prompt into the LLM (It is LCEL syntax)
+    # The pipe operator takes the output of the left side (the prompt) and feeds it as input to the right side (the LLM)
+    # The left side is a function that takes a dictionary and returns the value associated with the 'input' key.
+    # When we invoke the chain later with agent.invoke({'input': 'some text'}), the input text will be passed to the prompt.
+
+    agent_step: Union[AgentAction, AgentFinish] = agent.invoke({'input': 'What is the length of the text: "Hello, Leo!"?', 'agent_scratchpad': intermediate_steps})  # Invoke the agent with a sample input question
+    print(agent_step) 
+    # If agent_step is an instance of AgentAction, it means the agent has decided to take an action.
+    # If not, it would be an instance of AgentFinish, indicating the agent has completed its task and provided a final answer.
+   
+
+    #  The following code demonstrates how to handle the AgentAction by executing the corresponding tool. Is it because the agent wouldn't able to execute the tool by itself? Answer is yes. Why? Because the agent is just a reasoning engine that decides what to do, but it doesn't have the capability to execute tools directly. The actual execution of tools needs to be handled separately in the code.
+    if isinstance(agent_step, AgentAction):
+        tool_name = agent_step.tool
+        tool_to_use= find_tool_by_name(tools, tool_name)
+        tool_input= agent_step.tool_input
+        observation= tool_to_use.func(str(tool_input)) # Execute the tool with the provided input
+        print(f"Observation: {observation}")
+        intermediate_steps.append((agent_step, observation)) # This is needed to keep track of the agent's reasoning process. Agent has both the history of its thoughts and observations. It is like a memory of what has happened so far in the conversation.
+        print("Intermediate Steps:", intermediate_steps)
+    # The ReActSingleInputOutputParser will parse the LLM's output to extract the final answer after the agent has completed its reasoning and actions.
+    # ReActSingleInputOutputParser NO ejecuta nada por sí mismo. Su papel es leer el texto crudo que devuelve el LLM (en el formato ReAct que tú impones en el prompt) y convertirlo en una estructura: { "final_answer": "..." }: 
+
+    # parsed = AgentAction(
+    # tool="get_text_length",
+    # tool_input='"Hello, World!"',
+    # log='Action: get_text_length\nAction Input: "Hello, World!"')
 
 
+    # class ReActSingleInputOutputParser(name: str | None)
+    # Parses ReAct-style LLM calls that have a single tool input.
 
-# What is an AgentExecutor in LangChain?
-# An AgentExecutor is a class that is used to execute an agent. It is a Runnable object, it receives an LLM and a list of tool and a prompt and the prompt we will give it to it is a react prompt.
-# An AgentExecutor is responsible for managing the interaction between the LLM and the tools. It is a while loop.
-# The AgentExecutor is gonna make sure that the agent can use the tools effectively and that the LLM can generate the right prompts for the tools.
-# It is something like this: 
+    # Expects output to be in one of two formats.
 
-class FakeAgentExecutor:
-    def invoke(self,input):
-        while True:
-            result= self.agent(input) # The agent is gonna plan the next action based on the input.
-            if result == 'RunTool':
-                tool_to_run(tool_input) 
-            else: 
-                return result # Final answer
-# We stop the loop when we reach the final answer. When the LLM decides that it has enough information to provide a final answer, the loop terminates, and the answer is returned.
+    # If the output signals that an action should be taken, should be in the below format. This will result in an AgentAction being returned.
+
+    #Thought: agent thought here
+    #Action: search
+    #Action Input: what is the temperature in SF?
+    # If the output signals that a final answer should be given, should be in the below format. This will result in an AgentFinish being returned.
+
+    #Thought: agent thought here
+    #Final Answer: The temperature is 100 degrees
+    agent_step: Union[AgentAction, AgentFinish] = agent.invoke({'input': 'What is the length of the text: "Hello, Leo!"?', 'agent_scratchpad': intermediate_steps})  # Invoke the agent with a sample input question
+    print(f'Second step: {agent_step}') 
+    if isinstance(agent_step, AgentFinish):
+        print(f"Final Answer: {agent_step.return_values}")
+    
+
+    # Finally we invoke the agent again with the updated intermediate steps to get the final answer. The agent will use the observations from the tool execution to arrive at the final answer and the intermediate steps will help it keep track of its reasoning process.
+
+    # Callbacks are a way to hook into the execution of LangChain components to monitor and respond to events that occur during the processing of LLM calls, tool executions, and agent actions.
